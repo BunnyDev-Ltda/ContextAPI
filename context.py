@@ -6,7 +6,7 @@ import pygame, random, json, os, inspect
 
 
 LOG = True
-endline = True
+endline = False
 _z = ["<module>", "_call_with_frames_removed"]
 
 def log(*args):
@@ -14,14 +14,14 @@ def log(*args):
         x = []
         if len(args) >= 3:
             from_where, method, text = args
-            x = [f" | {from_where:<12}", "|", f"{method:<12}", "|", text]
+            x = [f" | {from_where:<13}", "|", f"{method:<13}", "|", text]
         else:
             print(*args)
         if endline and x:
             stack = inspect.stack()
             caller = stack[1].function
             if caller not in _z:
-                x.append(f"\n | Caller       | {caller:<12} |")
+                x.append(f"\n | CALLER        | {caller:<13} |")
                 if len(stack) > 2:
                      origin = stack[2].function
                      if origin not in _z:
@@ -1431,7 +1431,7 @@ class ContextManager:
                 pygame.draw.rect(screen, obj.ux.bcolor, obj.ui.rect, width=obj.ui.bsize)
 
 
-    def mouse_event_handler(self, event):
+    def event_handler(self, event):
         if event.type == pygame.MOUSEBUTTONDOWN:
             if event.button == 1:
                 modals = [obj for obj in self.render.query if obj._type == "<Modal>" and obj.ux.show]
@@ -1448,9 +1448,10 @@ class ContextManager:
                     if btn.ui.rect and btn.ui.collidepoint(self.mouse.pos):
                         btn.clicked = True
                         if btn.on_click is not None and callable(btn.on_click):
-                            log("Button", "CALL", f"item: {btn.ui} clicked\n '{'-'*27}'")
+                            log("Button", "CALL", f"item: {btn.uid} clicked")
+                            print(f" {'-'*33}")
                             btn.on_click()
-                            print(f" .{'-'*27}.")
+                            print(f" {'-'*33}")
         elif event.type == pygame.MOUSEBUTTONUP:
             if event.button == 1:
                 for obj in self.render.query:
@@ -1501,7 +1502,7 @@ class ContextManager:
                 self.mouse.rel = pygame.mouse.get_rel()
                 if hasattr(event, "button"):
                     self.mouse.pressed = pygame.mouse.get_pressed()
-        self.mouse_event_handler(event)
+        self.event_handler(event)
         for i in self._binds.values():
             if event.type == i.event:
                 ev_val = getattr(event, 'key', None) if event.type in (pygame.KEYDOWN, pygame.KEYUP) else getattr(event, 'button', None)
