@@ -7,6 +7,14 @@ import pygame, random, json, os
 
 LOG = True
 
+def log(*args):
+    if LOG:
+        if len(args) >= 3:
+            from_where, method, text = args
+            print(f" | {from_where:<12}", "|", f"{method:<12}", "|", text)
+        else:
+            print(*args)
+
 
 def load_config(root=None, path="config.json"):
     try:
@@ -14,24 +22,18 @@ def load_config(root=None, path="config.json"):
         if root is not None:
             x = os.path.join(root, path)
         if not os.path.exists(x):
-            log(f"System couldn't find the path: {x}")
+            log("System", "ERROR", f"couldn't find the path: {x}")
             return {}
         with open(x, "r", encoding="utf-8") as f:
             content = json.load(f)
             if not content:
-                log(f"System couldn't load anything from path: {x}")
+                log("System", "ERRO", f"couldn't load anything from path: {x}")
                 return {}
-            log(f"System loaded from path: {x}")
+            log("System", "LOAD", f"settings loaded from path: {x}")
             return content
     except Exception as e:
-        log("System raised an error while loading settings!\n", "*"*30, e)
+        log("System", "ERROR", f"while loading settings: {e}")
         return {}
-
-
-
-def log(*args):
-    if LOG:
-        print(*args)
 
 
 @lru_cache(maxsize=32)
@@ -52,6 +54,103 @@ def calculate_bounded_size(size: tuple, msize: tuple) -> tuple:
 
 
 @dataclass(slots=True, eq=False)
+class MovementHandler:
+    enabled:    bool   = True
+    debug:      bool   = True
+    jumped:     bool   = False
+    flying:     bool   = False
+
+    _type:      str    = "<MovementHandler>"
+    jumpkey:    int    = pygame.K_SPACE
+
+    speed:      int    = 200
+    topspeed:   int    = 200
+    step:       int    = 25
+    gravity:    int    = 1
+    jumpforce:  int    = -20
+    velocity_y: int    = 0
+    velocity_x: int    = 0
+
+    limit:      object = None # rect
+
+    movset:     list   = field(default_factory=list)
+    _base:      list   = field(default_factory=lambda: [pygame.K_w, pygame.K_a, pygame.K_s, pygame.K_d])
+
+
+    def setup_movset(self, custom_keys: list = None):
+        base = custom_keys if custom_keys else self._base
+        self.movset = []
+        for i in base:
+            if isinstance(i, str):
+                key_val = getattr(pygame, f"K_{i.lower()}", None)
+                if key_val is None:
+                    log("Movset", "WARN", f"key: {i} is not a valid key!")
+                    continue
+                self.movset.append(key_val)
+            else:
+                self.movset.append(i)
+        log("Movset", "ADD", f"Movement keys configured successfully ({len(self.movset)} keys)")
+
+
+    def update(self, ui_handler, dt, limits=None, margin=2):
+        if self.jumpforce >= 0:
+            self.flying = True
+
+        if not self.enabled or not self.movset:
+            return
+
+        dx = 0
+        dy = 0
+        key = pygame.key.get_pressed()
+
+        if len(self.movset) >= 4:
+            if key[self.movset[0]]: dy = -1  # Cima
+            if key[self.movset[1]]: dx = -1  # Esquerda
+            if key[self.movset[2]]: dy = 1   # Baixo
+            if key[self.movset[3]]: dx = 1   # Direita
+
+        if not self.flying:
+            if self.gravity > 0:
+                self.velocity_y += self.gravity * dt * 60 
+                if key[self.jumpkey] and not self.jumped:
+                    self.velocity_y = self.jumpforce
+                    self.jumped = True
+
+        z = pygame.math.Vector2(dx, 0)
+        if z.length() > 0:
+            z = z.normalize() * self.speed * dt
+
+        new_x = ui_handler.pos[0] + z.x
+        new_y = ui_handler.pos[1] + (z.y if self.gravity <= 0 else 0) + (self.velocity_y if self.gravity > 0 else dy * self.speed * dt)
+
+        ui_handler.pos = (new_x, new_y)
+        if ui_handler.rect:
+            ui_handler.rect.topleft = ui_handler.pos
+
+        # Limites da tela
+        if limits is not None and ui_handler.rect is not None:
+            if isinstance(limits, pygame.Rect):
+                if ui_handler.rect.top <= limits.top + margin:
+                    ui_handler.rect.top = limits.top + margin
+                    self.velocity_y = 0 # Reseta velocidade ao bater no teto
+                if ui_handler.rect.bottom >= limits.bottom - margin:
+                    ui_handler.rect.bottom = limits.bottom - margin
+                    self.velocity_y = 0 # Reseta velocidade ao tocar no chão
+                    self.jumped = False # Permite pular novamente
+                if ui_handler.rect.left <= limits.left + margin:
+                    ui_handler.rect.left = limits.left + margin
+                if ui_handler.rect.right >= limits.right - margin:
+                    ui_handler.rect.right = limits.right - margin
+                
+                ui_handler.pos = ui_handler.rect.topleft
+
+
+    def __repr__(self):
+        return "<MovementHandler>"
+
+
+
+@dataclass(slots=True, eq=False)
 class UIHandler:
     changed:  bool   = True
     tdrag:    bool   = False
@@ -60,7 +159,6 @@ class UIHandler:
     layer:    int    = 0 # class-layer
     bsize:    int    = 0 # border-size
     tsize:    int    = 0 # topbar-size
-    speed:    int    = 200 # temporary
 
     align:    str    = "absolute"
     _type:    str    = "<UIHandler>"
@@ -71,6 +169,7 @@ class UIHandler:
     arect:    object = None # anchor-rect
     trect:    object = None # topbar-rect
     anchor:   object = None # main-anchor
+    movement: object = field(default_factory=MovementHandler)
 
     pos:      tuple  = (0, 0)
     startpos: tuple  = (0, 0)
@@ -86,7 +185,11 @@ class UIHandler:
 
 
     def collide(self, other: pygame.Rect):
-        return self.ui.rect.colliderect(other)
+        return self.rect.colliderect(other)
+
+
+    def collidepoint(self, pos: tuple):
+        return self.rect.collidepoint(pos)
 
 
     def set_speed(self, speed=200, step=0):
@@ -109,7 +212,7 @@ class UIHandler:
             w = int((self.size[0] + adjust[0]) / times[0])
             h = int((self.size[1] + adjust[1]) / times[1])
             return (w, h)
-        log("get-half: can't divide by zero!")
+        log("UIHandler", "GET", "can't divide by zero!")
         return self.size
 
 
@@ -148,6 +251,7 @@ class UXHandler:
     fitalic:   bool   = False # font-italic
     fbold:     bool   = True  # font-bold
     fsmooth:   bool   = True
+    rescaled:  bool   = False
 
     alpha:     int    = 255
     fsize:     int    = 15 # font-size
@@ -185,21 +289,46 @@ class UXHandler:
         self.show = not self.show
 
 
-    def load(self):
-        if not self.path:
-            log("Load-Debug: couldn't read any path to load!")
-            return None
+    def rescale(self, rect, smooth=True):
+        if self.rescaled or not self.path:
+            return self.surface
+        if self.root is not None:
+            x = os.path.join(self.root, self.path)
+        else:
+            x = self.path
+        if not os.path.exists(x):
+            return self.surface
+        img = pygame.image.load(x).convert_alpha()
+        img_w, img_h = img.get_size()
+        rect_w, rect_h = rect.width, rect.height
+        if img_w == 0 or img_h == 0 or rect_w == 0 or rect_h == 0:
+            return img
+        ratio = min(rect_w / img_w, rect_h / img_h)
+        new_size = (max(1, int(img_w * ratio)), max(1, int(img_h * ratio)))
+        if smooth:
+            img_res = pygame.transform.smoothscale(img, new_size)
+        else:
+            img_res = pygame.transform.scale(img, new_size)
+        self.surface = img_res
+        self.rescaled = True
+        return img_res
 
+
+    def load(self, rect=None):
+        if not self.path:
+            log("UXHandler", "ERROR", "couldn't read any path to load!")
+            return None
         x = self.path
         if self.root and self.path:
             x = os.path.join(self.root, self.path)
-
         if not os.path.exists(x):
-            log(f"Load-Debug: couldn't load anything from path: {x}")
+            log("UXHandler", "ERROR", f"couldn't load anything from path: {x}")
             return None
-
-        log(f"Load-Debug: IMAGE LOADED FROM PATH {x}")
+        log("UXHandler", "LOAD", f"image loaded from path {x}")
         self.surface = pygame.image.load(x).convert_alpha()
+        self.rescaled = False
+        if rect is not None:
+            self.surface = self.rescale(rect)
         self.surface.set_alpha(self.alpha)
 
 
@@ -214,7 +343,7 @@ class UXHandler:
 
 
 
-@dataclass
+@dataclass(slots=True, eq=False)
 class RenderHandler:
     _type:  str  = "<RenderHandler>"
     query:  list = field(default_factory=list)
@@ -261,8 +390,6 @@ class Node:
     ui:      object = field(default_factory=UIHandler)
     ux:      object = field(default_factory=UXHandler)
 
-    _movset: list   = field(default_factory=list)
-
 
     def __setattr__(self, key, value):
         if hasattr(self, key):
@@ -288,7 +415,6 @@ class Text:
     ux:        object  = field(default_factory=UXHandler)
     ui:        object  = field(default_factory=UIHandler)
 
-    _movset:   list    = field(default_factory=list)
     _lines:    list    = field(default_factory=list)
 
 
@@ -348,8 +474,6 @@ class Rect:
     _type:   str    = "<Rect>"
     uid:     str    = None
 
-    _movset: list   = field(default_factory=list)
-
     ui:      object = field(default_factory=UIHandler)
     ux:      object = field(default_factory=UXHandler)
 
@@ -383,8 +507,6 @@ class Image:
     _type:   str    = "<Image>"
     uid:     str    = ""
 
-    _movset: list   = field(default_factory=list)
-
     ui:      object = field(default_factory=UIHandler)
     ux:      object = field(default_factory=UXHandler)
 
@@ -410,8 +532,6 @@ class Modal:
     _type:    str    = "<Modal>"
     uid:      str    = ""
 
-    _movset:  list   = field(default_factory=list)
-
     _offset:  tuple  = field(default_factory=tuple)
 
     ui:       object = field(default_factory=UIHandler)
@@ -425,9 +545,9 @@ class Modal:
 
     def add_child(self, obj: object, adjust: tuple=None):
         if obj is None:
-            log("Modal-Debug: ITEM must be an object!")
+            log("Modal", "ERROR", "child must be an object!")
         elif obj.ui.anchor == self and obj in self.ui.children:
-            log(f"Modal-Debug: ITEM {obj.uid} already in children!")
+            log("Modal", "WARN", f"child {obj.uid} already in children!")
         else:
             self.ui.children.append(obj)
             obj.ui.anchor   = self
@@ -435,13 +555,13 @@ class Modal:
             obj.ui.layer    = self.ui.layer + 1
             obj.ui.align    = "relative.topleft"
             obj.ui.adjust   = adjust if adjust is not None else (2, 2)
-            log(f"Modal-Debug: CHILD {obj.uid} ADDED TO {self.uid} CHILDREN")
+            log("Modal", "ADD", f"child {obj.uid} has been added to {self.uid} children")
 
 
     def rem_child(self, obj: object):
         if obj in self.ui.children:
             self.ui.children.remove(obj)
-            log(f"Modal-Debug: CHILD {obj.uid} REMOVED FROM {self.uid}")
+            log("Modal", "DEL" f"{obj.uid} has been removed from {self.uid} children")
 
 
     def __setattr__(self, key, value):
@@ -458,20 +578,21 @@ class Modal:
 
 @dataclass(slots=True, eq=False)
 class Button:
-    enabled:  bool   = True
-    changed:  bool   = True
-    debug:    bool   = True
-    clicked:  bool   = False
-    hover:    bool   = False
+    enabled:  bool     = True
+    changed:  bool     = True
+    debug:    bool     = True
+    clicked:  bool     = False
+    hover:    bool     = False
 
-    uid:      str    = ""
-    _type:    str    = "<Button>"
+    uid:      str      = ""
+    _type:    str      = "<Button>"
 
-    _icons:   list   = field(default_factory=list) # small images
-    _movset:  list   = field(default_factory=list)
+    _icons:   list     = field(default_factory=list) # small images
 
-    ux:       object = field(default_factory=UXHandler)
-    ui:       object = field(default_factory=UIHandler)
+    ux:       object   = field(default_factory=UXHandler)
+    ui:       object   = field(default_factory=UIHandler)
+
+    on_click: callable = None
 
 
     def _calculate(self, current, target, step=5):
@@ -543,13 +664,13 @@ class Bind:
             if callable(self.callback):
                 self.callback()
                 if debug:
-                    log(f"Bind-Call: {self.uid} - CALLBACK WORKING!")
+                    log("Bind", "CALL", f"{self.uid}", "WORKING")
                 return True
             else:
-                log(f"Bind: {self.uid} is not a callable!")
+                log("Bind", "ERROR", f"{self.uid} isn't a callable!")
                 return False
         except Exception as e:
-            log(f"Bind: {self.uid}, could not be called!\n{type(e).__name__} in {e}")
+            log("Bind", "EXCEPTION" f"{self.uid} couldn't be called! - {type(e).__name__} in {e}")
             return False
 
 
@@ -570,11 +691,9 @@ class Line:
     ui:      object = field(default_factory=UIHandler)
     ux:      object = field(default_factory=UXHandler)
 
-    _movset: list   = field(default_factory=list)
 
 
-
-@dataclass
+@dataclass(slots=True, eq=False)
 class MouseManager:
     enabled:  bool   = True
 
@@ -601,20 +720,203 @@ class MouseManager:
             return None
         for obj in query:
             if getattr(obj.ux, "show", True) and getattr(obj, "debug", True):
-                if hasattr(obj.ui, "rect") and obj.ui.rect and obj.ui.rect.collidepoint(self.pos):
+                if obj.ui.rect and obj.ui.collidepoint(self.pos):
                     return obj
         return None
 
 
     def hover(self, obj: object=None):
         if obj is not None:
-            if hasattr(obj.ui, "rect") and obj.ui.rect is not None:
-                return obj.ui.rect.collidepoint(self.pos)
+            if obj.ui.rect is not None:
+                return obj.ui.collidepoint(self.pos)
+
+
+
+@dataclass(slots=True, eq=False)
+class AudioManager:
+    data: dict = field(default_factory=dict)
+    channels: dict = field(default_factory=lambda: {0: pygame.mixer.Channel(0)})
+    master: float = 0.5
+    muted: bool = False
+    bgm: bool = False
+
+
+    def mute(self) -> bool:
+        self.muted = not self.muted
+        if self.muted:
+            self.vl_master(0.0)
+        else:
+            try:
+                for sound in self.data:
+                    self.data[sound]["ref"].set_volume(self.data[sound]["volume"])
+            except Exception:
+                return False
+        return True
+
+
+    def vl_master(self, volume: float) -> bool:
+        if not isinstance(volume, float) or not (0.0 <= volume <= 1.0):
+            raise ValueError("key: volume must be a float in range 0.0 to 1.0!")
+        self.master = volume
+        try:
+            for sound in self.data:
+                self.data[sound]["ref"].set_volume(self.master)
+        except Exception:
+            return False
+        return True
+
+
+    def vl_channel(self, volume: float, channel: int = 0) -> bool:
+        if not isinstance(volume, float) or not (0.0 <= volume <= 1.0):
+            raise ValueError("key: volume must be a float in range 0.0 to 1.0!")
+        if not isinstance(channel, int):
+            raise  ValueError(f"item: {channel} must be an int, like: 1, 2 or 3!")
+
+        if channel not in self.channels:
+            raise KeyError(f"item: {channel} doesn't exists!")
+        else:
+            if not self.muted:
+                self.channels[channel].set_volume(volume)
+                return True
+        return False
+
+
+    def vl_fx(self, volume: float, sound_id: str) -> bool:
+        if not isinstance(volume, float) or not (0.0 <= volume <= 1.0):
+            raise ValueError("key: volume must be a float in range 0.0 to 1.0!")
+        if not isinstance(sound_id, str):
+            raise ValueError(f"item: {sound_id} must be a string!")
+        if sound_id not in self.data:
+            raise KeyError(f"item: {sound_id} doesn't exists!")
+        else:
+            self.data[sound_id]["volume"] = volume
+            if not self.muted:
+                self.data[sound_id]["ref"].set_volume(volume)
+            return True
+
+
+    def vl_bg(self, volume: float) -> bool:
+        if not isinstance(volume, float) or not (0.0 <= volume <= 1.0):
+            raise ValueError("key: volume must be a float in range 0.0 to 1.0!")
+        if not self.muted:
+            pygame.mixer.music.set_volume(volume)
+            return True
+        return False
+
+
+    def fx_add(self, sound_id: str, sound_local: str, channel: int = 0, volume=None) -> bool:
+        if volume is not None and (not isinstance(volume, float) or not (0.0 <= volume <= 1.0)):
+            raise ValueError("key: volume must be a float in range 0.0 to 1.0!")
+        if not all(isinstance(i, str) for i in [sound_id, sound_local]):
+            raise ValueError("key: id & local must be a string!")
+        if not isinstance(channel, int):
+            raise ValueError(f"item: {channel} must be an int, like: 1, 2 or 3!")
+        if channel not in self.channels:
+            log("Channel", "WARN", f"item: {channel} doesn't exists!")
+            return False
+        if volume is None:
+            volume = self.master
+        if sound_id not in self.data:
+            self.data[sound_id] = {
+                "ref": pygame.mixer.Sound(sound_local), 
+                "local": sound_local, 
+                "channel": channel, 
+                "volume": volume
+            }
+            self.data[sound_id]["ref"].set_volume(volume)
+            log("Sound", "ADD", f"item: {sound_id} has been added to data successfully!")
+            return True
+        log("Sound", "WARN", f"item: {sound_id} already exists!")
+        return False
+
+
+    def fx_play(self, sound_id: str) -> bool:
+        if not isinstance(sound_id, str):
+            raise ValueError("key: id must be a string!")
+        if sound_id not in self.data:
+            log("Sound", "WARN", f"item: {sound_id} doesn't exists!")
+            return False
+        channel_id = self.data[sound_id]["channel"]
+        if channel_id in self.channels:
+            if not self.muted:
+                self.data[sound_id]["ref"].set_volume(self.data[sound_id]["volume"])
+            self.channels[channel_id].play(self.data[sound_id]["ref"])
+            return True
+        log("Channel", "WARN", f"item: {channel_id} doesn't exists!")
+        return False
+
+
+    def fx_stop(self, sound_id=None):
+        if sound_id is None:
+            for i in self.data:
+                channel_id = self.data[i]["channel"]
+                if channel_id in self.channels:
+                    self.channels[channel_id].stop()
+                    log("Channel", "STOP", f"item: {channel_id} sounds has been stopped!")
+        else:
+            if sound_id in self.data:
+                channel_id = self.data[sound_id]["channel"]
+                if channel_id in self.channels:
+                    self.channels[channel_id].stop()
+                    log("Channel", "STOP", f"item: {channel_id} sounds has been stopped!")
+
+
+    def new_channel(self, channel_id: int, volume=None) -> bool:
+        if not isinstance(channel_id, int):
+            raise  ValueError(f"item: {channel_id} must be an int, like: 1, 2 or 3!")
+        if volume is not None and (not isinstance(volume, float) or not (0.0 <= volume <= 1.0)):
+            raise ValueError("key: volume must be a float in range 0.0 to 1.0!")
+        if volume is None:
+            volume = self.master
+        if channel_id not in self.channels:
+            self.channels[channel_id] = pygame.mixer.Channel(channel_id)
+            self.channels[channel_id].set_volume(volume)
+            log("Channel", "ADDED", f"item: {channel_id} has been created successfully!")
+            return True
+        log("Channel", "WARN", f"item: {channel_id} already exists!")
+        return False
+
+
+    def bg_play(self, sound_local: str, loop=True, volume=None) -> bool:
+        if volume is not None and (not isinstance(volume, float) or not (0.0 <= volume <= 1.0)):
+            raise ValueError("key: volume must be a float in range 0.0 to 1.0!")
+        if not isinstance(sound_local, str):
+            raise ValueError("key: local must be a string!")
+        if not isinstance(loop, bool):
+            raise ValueError("key: loop must be a boolean!")
+        if volume is None:
+            volume = self.master
+        if not self.bgm:
+            self.bgm = True
+            pygame.mixer.music.load(sound_local)
+            if not self.muted:
+                pygame.mixer.music.set_volume(volume)
+            if loop:
+                pygame.mixer.music.play(-1)
+            else:
+                pygame.mixer.music.play()
+            log("Audio", "PLAY", "item: bgm is now playing!")
+            return True
+        return False
+
+
+    def bg_stop(self) -> bool:
+        if self.bgm:
+            self.bgm = False
+            pygame.mixer.music.stop()
+            log("Audio", "STOP", "item: bgm has been stopped!")
+            return True
+        log("Audio", "WARN", "There's no music playing!")
+        return False
+
+
+    def __repr__(self):
+        return "<AudioManager>"
 
 
 
 class ContextManager:
-    def __init__(self, root):
+    def __init__(self, root, init_mixer=False):
         self.uid        = "ContextManager"
         self.root       = root
         self.index      = 0  # unique, incremental
@@ -625,9 +927,9 @@ class ContextManager:
         self.sort_dirty = True
         self.paused     = False
         self.models     = {}
-        self._mouse     = MouseManager()
-        self._render    = RenderHandler()
-
+        self.mouse      = MouseManager()
+        self.render     = RenderHandler()
+        self.audio      = AudioManager() if init_mixer else None
         self.new_model(
             node=Node,
             text=Text,
@@ -638,7 +940,7 @@ class ContextManager:
             line=Line
         )
 
-    
+
     def serialize(self, obj, get_all=False, dump=False):
         y = {}
         if not get_all:
@@ -647,63 +949,39 @@ class ContextManager:
             for k, v in self.query.items():
                 y[k] = self.debug_item(v)
         if dump:
-            y = str(json.dumps(y, indent=2, ensure_ascii=False, default=str))
+            y = str(json.dumps(y, indent=4, ensure_ascii=False, default=str))
         return y
+
+
+    # folders/filename only, root implicit
+    def save_item(self, obj: object, path=None):
+        if obj is None or obj not in self.query.values():
+            log("System", "ERROR", "item: obj must be a valid object!")
+            return False
+        if path is None:
+            log("System", "WARN", "key: path must be a string!")
+            return False
+        x = os.path.join(self.root, path)
+        if not os.path.exists(os.path.dirname(x)):
+            log("System", "ERROR", "key: path doesn't exists!")
+            return False
+        try:
+            with open(x, "w", encoding="utf-8") as f:
+                json.dump(self.serialize(obj), f, indent=4, ensure_ascii=False, default=str)
+            log("System", "SAVE", f"{obj.uid} data has been saved in {x}")
+            return True
+        except Exception as e:
+            log("System", "EXCEPTION", f"can't save {obj.uid} data in path: {path} - {e}")
+            return False
 
 
     def new_model(self, **models):
         for k, v in models.items():
             if k in self.models:
-                log(f"Model: {k} already exists!")
+                log("Model", "WARN", f"model: {k} already exists!")
                 continue
             self.models[k] = v
-            log(f"Model: {k} created!")
-
-
-    def add_movset(self, obj:object, movset: list=None):
-        # for lazy devs, doing lazy things
-        x = ["bind_up", "bind_left", "bind_down", "bind_right"]
-        base = [pygame.K_w, pygame.K_a, pygame.K_s, pygame.K_d] if not movset else movset
-        if base is not None:
-            for idx, i in enumerate(base):
-                _ = i
-                if isinstance(i, str):
-                    _ = getattr(pygame, f"K_{i}", None)
-                    if _ is None:
-                        log(f"Movset: {i} is not an valid key!")
-                        continue
-                obj._movset.append(self.add_bind(None, _, None, x[idx]))
-        else:
-            log("Bind: movset have to be a list with four pygame keys!")
-
-
-    def update_movset(self, obj, dt, limits=None, margin=2):
-        if obj._movset:
-            dx = 0
-            dy = 0
-            key = pygame.key.get_pressed()
-            if key[obj._movset[0].key]: dy = -1
-            if key[obj._movset[1].key]: dx = -1
-            if key[obj._movset[2].key]: dy = 1
-            if key[obj._movset[3].key]: dx = 1
-            z = pygame.math.Vector2(dx, dy)
-            if z.length() > 0:
-                z = z.normalize() * obj.ui.speed * dt
-                obj.ui.pos = (obj.ui.pos[0] + z.x, obj.ui.pos[1] + z.y)
-                if obj.ui.rect:
-                    obj.ui.rect.topleft = obj.ui.pos
-            if limits is not None:
-                if isinstance(limits, pygame.Rect):
-                    if obj.ui.rect is not None:
-                        if obj.ui.rect.top <= limits.top + margin:
-                            obj.ui.rect.top = limits.top + margin
-                        if obj.ui.rect.bottom >= limits.bottom - margin:
-                            obj.ui.rect.bottom = limits.bottom - margin
-                        if obj.ui.rect.left <= limits.left + margin:
-                            obj.ui.rect.left = limits.left + margin
-                        if obj.ui.rect.right >= limits.right - margin:
-                            obj.ui.rect.right = limits.right - margin
-                        obj.ui.pos = obj.ui.rect.topleft
+            log("Model", "ADD", f"model: {k} created successfully!")
 
 
     def add_bind(self, event, key, callback=None, uid=None, temp=False):
@@ -711,15 +989,15 @@ class ContextManager:
             uid = f"bind-{self.bind_index}-{key}"
         if not temp:
             if uid in self._binds:
-                log(f"Bind-Debug: {uid} RETURN WORKING")
+                log(f"Bind", "OK",  f"{uid} - WORKING")
                 return self._binds[uid]
-        if key is None: log("Bind-Debug: KEY is None!")
+        if key is None: log("Bind", "WARN", "key is None!")
         x          = Bind()
         x.uid      = uid
         x.key      = getattr(pygame, f"K_{key}", None) if isinstance(key, str) else key
         x.event    = getattr(pygame, event, None) if isinstance(event, str) else event
         x.callback = callback
-        log(f"Bind-Debug: INDEX ({self.bind_index:0>3}) - {uid} ADD WORKING")
+        log("Bind", "ADD", f"item: {uid} has been added to binds!")
         if not temp:
             self._binds[uid] = x
             self.bind_index += 1
@@ -728,7 +1006,7 @@ class ContextManager:
 
     def rem_bind(self, uid):
         if uid not in self._binds:
-            log(f"Bind: {uid} doens't exists!")
+            log("Bind", "WARN", f"item: {uid} doens't exists!")
             return False
         del self._binds[uid]
         return True
@@ -769,24 +1047,25 @@ class ContextManager:
         idx = self.index if custom_uid is None else custom_uid
         if idx not in self.query:
             self.query[idx] = obj
-            self._render.query.append(obj)
+            self.render.query.append(obj)
             self.sort_dirty = True
-            log(f"Item-Debug: INDEX ({self.index:0>3}) - {idx} ADD WORKING")
+            log(f"Item", "ADD", f"item: {idx} - ({self.index:0>3}) has been added to query!")
             self.index += 1
             return True
         else:
-            log(f"Item: {idx} already exists!")
+            log("Item", "WARN", f"item: {idx} already exists!")
             return False
 
 
     def rem_item(self, uid: str=None):
         if uid is None:
-            log("Item: UID must ben a string!")
+            log("Item", "ERROR", "item uid must be a string!")
             return False
         if uid in self.query:
             obj = self.query.pop(uid)
-            if obj in self._render.query:
-                self._render.query.remove(obj)
+            if obj in self.render.query:
+                self.render.query.remove(obj)
+                log("Item", "DEL", f"item: {uid} has been removed successfully!")
             self.sort_dirty = True
             return True
         return False
@@ -882,7 +1161,7 @@ class ContextManager:
         try:
             m = self.models.get(model, None)
             if not m:
-                log(f"Model: '{model}' doens't exists!")
+                log(f"Model", "WARN", f"model: {model} doens't exists!")
                 return None
             temp = m()
             temp.uid = uid
@@ -899,11 +1178,15 @@ class ContextManager:
                     setattr(temp, k, v)
 
                 if k not in x:
-                    log(f"Item: {k} isn't in {uid} slots!")
+                    log("Item", "WARN", f"key: {k} isn't in {uid} slots!")
                     continue
                 elif k == "uid":
-                    log("Items: UID already is a required args")
+                    log("Item", "WARN", "key: uid already is a required args")
                     continue
+
+
+            if temp.ui.rect is None:
+                temp.ui.rect = temp.ui.get_rect(temp.ux.render or temp.ux.surface)
 
             if temp._type == "<Text>":
                 temp.ux.font = get_cached_sysfont(*temp.ux.fdata)
@@ -911,14 +1194,14 @@ class ContextManager:
             elif temp._type == "<Image>":
                 if not temp.ux.root:
                     temp.ux.root = self.root
-                temp.ux.load()
+                temp.ux.load(temp.ui.rect)
             if temp.ui.rect is None:
                 temp.ui.rect = temp.ui.get_rect(temp.ux.render or temp.ux.surface)
             if self.add_item(temp, uid):
                 return temp
             return None
         except Exception as e:
-            log(f"Add-Debug: INDEX ({self.index}) - System couldn't create {model}\n{e}")
+            log("Item", "EXCEPTION", f"index: {self.index:0>3} - system couldn't create {model}\n{e}")
             return Node()
 
 
@@ -952,7 +1235,7 @@ class ContextManager:
 
     def destroy(self, obj: object|str=None):
         if obj is None:
-            log("Destroy: obj is None!")
+            log("Destroy","WARN", "key: obj is None!")
             return None
         x = None
         if isinstance(obj, str):
@@ -973,7 +1256,7 @@ class ContextManager:
         
         if obj is None:
             if isinstance(key, str):
-                log("Action: Obj is required to use a key & val!")
+                log("Action", "ERROR", "key: obj is required to use a key or val!")
         else:
             if key is None:
                 obj = val() if callable(val) else val
@@ -999,7 +1282,7 @@ class ContextManager:
                     status = True
                 else:
                     uid_str = getattr(obj, "uid", type(obj).__name__)
-                    log(f"Action: {uid_str} hasn't any attribute as {key}")
+                    log("Action", "WARN", f"item: {uid_str} haven't any attribute as {key}")
         if function is not None and callable(function):
             function()
         if status:
@@ -1008,9 +1291,9 @@ class ContextManager:
 
     def render(self, screen, dt, limits=None):
         if self.sort_dirty:
-            self._render.query.sort(key=lambda item: item.ui.layer)
+            self.render.query.sort(key=lambda item: item.ui.layer)
             self.sort_dirty = False
-        for obj in self._render.query:
+        for obj in self.render.query:
             if obj.ui.anchor is not None and not isinstance(obj.ui.anchor, pygame.Rect):
                 if not obj.ui.anchor.ux.show or not obj.ui.anchor.enabled:
                     obj.enabled = False
@@ -1025,8 +1308,8 @@ class ContextManager:
             if obj.ui.changed or obj.ux.changed:
                 obj.changed = True
 
-            if obj._movset and not self.paused:
-                self.update_movset(obj, dt, limits)
+            if obj.ui.movement.movset and not self.paused:
+                obj.ui.movement.update(obj.ui, dt, limits)
 
             if obj.changed:
                 # Resolução de âncora
@@ -1076,11 +1359,12 @@ class ContextManager:
                         if i.ui.layer <= obj.ui.layer:
                             i.ui.layer = obj.ui.layer + 1
                             self.sort_dirty = True
+
                 if obj._type == "<Text>":
                     new_fdata = (obj.ux.fname, obj.ux.fsize, obj.ux.fbold, obj.ux.fitalic)
                     if obj.ux.font is None or obj.ux.fdata != new_fdata:
                         obj.ux.fdata = new_fdata
-                        obj.ux.font = pygame.font.SysFont(*obj.ux.fdata)
+                        obj.ux.font = get_cached_sysfont(*obj.ux.fdata)
                     raw_lines = obj.wrap_text()
                     obj._lines = [obj.ux.font.render(lt, obj.ux.fsmooth, obj.ux.color) for lt in raw_lines]
                     current_pos = (obj.ui.rect.x, obj.ui.rect.y) if obj.ui.rect else obj.ui.pos
@@ -1088,7 +1372,8 @@ class ContextManager:
                         obj.ui.rect = obj._lines[0].get_rect(topleft=current_pos)
                 elif obj._type == "<Image>" and obj.ui.rect is None:
                     if obj.ux.surface is None:
-                        obj.load()
+                        obj.ux.rescaled = False
+                        obj.ux.load(obj.ui.rect)
                     else:
                         obj.ui.rect = obj.ux.surface.get_rect(topleft=obj.ui.pos)
                 elif obj._type == "<Modal>" and obj.ux.tshow and obj.ui.trect is None and obj.ui.rect is not None:
@@ -1123,7 +1408,7 @@ class ContextManager:
                         pygame.draw.rect(screen, obj.ux.tcolor, obj.ui.trect)
             elif obj._type in ("<Button>", "<CheckButton>"):
                 if obj.ui.rect:
-                    is_hovered = obj.ui.rect.collidepoint(self._mouse.pos)
+                    is_hovered = obj.ui.collidepoint(self.mouse.pos)
                     obj.hover = is_hovered
                     obj.update_animation()
                     current_color = obj.ux.color
@@ -1137,69 +1422,73 @@ class ContextManager:
     def mouse_event_handler(self, event):
         if event.type == pygame.MOUSEBUTTONDOWN:
             if event.button == 1:
-                modals = [obj for obj in self._render.query if obj._type == "<Modal>" and obj.ux.show]
+                modals = [obj for obj in self.render.query if obj._type == "<Modal>" and obj.ux.show]
                 for modal in modals:
-                    if modal.ui.trect and modal.ui.trect.collidepoint(self._mouse.pos):
-                        self._mouse.detected = modal
+                    if modal.ui.trect and modal.ui.trect.collidepoint(self.mouse.pos):
+                        self.mouse.detected = modal
                         modal.ui.tdrag = True
-                        modal._offset = (self._mouse.pos[0] - modal.ui.rect.x, self._mouse.pos[1] - modal.ui.rect.y)
-                        pygame.mouse.set_cursor(self._mouse.cursors["move"])
+                        modal.ui.movement.flying = True
+                        modal._offset = (self.mouse.pos[0] - modal.ui.rect.x, self.mouse.pos[1] - modal.ui.rect.y)
+                        pygame.mouse.set_cursor(self.mouse.cursors["move"])
                         break
-                buttons = [obj for obj in self._render.query if obj._type == "<Button>" and obj.ux.show and obj.enabled]
+                buttons = [obj for obj in self.render.query if obj._type == "<Button>" and obj.ux.show and obj.enabled]
                 for btn in buttons:
-                    if btn.ui.rect and btn.ui.rect.collidepoint(self._mouse.pos):
+                    if btn.ui.rect and btn.ui.collidepoint(self.mouse.pos):
                         btn.clicked = True
-                        if "on_click" in btn.ux.extras and callable(btn.ux.extras["on_click"]):
-                            btn.ux.extras["on_click"]()
+                        if btn.on_click is not None and callable(btn.on_click):
+                            log("Button", "CALL", f"item: {btn.ui} clicked\n{'-'*26}")
+                            btn.on_click()
+                            print('-'*26)
         elif event.type == pygame.MOUSEBUTTONUP:
             if event.button == 1:
-                for obj in self._render.query:
+                for obj in self.render.query:
                     if obj._type == "<Button>":
                         obj.clicked = False
-                if self._mouse.detected:
-                    if hasattr(self._mouse.detected.ui, "tdrag"):
-                        self._mouse.detected.ui.tdrag = False
-                    self._mouse.detected = None
+                if self.mouse.detected:
+                    if hasattr(self.mouse.detected.ui, "tdrag"):
+                        self.mouse.detected.ui.tdrag = False
+                        self.mouse.detected.ui.movement.flying = False
+                    self.mouse.detected = None
                 hovering_any = False
-                modals = [obj for obj in self._render.query if obj._type == "<Modal>" and obj.ux.show]
+                modals = [obj for obj in self.render.query if obj._type == "<Modal>" and obj.ux.show]
                 for modal in modals:
-                    if modal.ui.trect and modal.ui.trect.collidepoint(self._mouse.pos):
+                    if modal.ui.trect and modal.ui.trect.collidepoint(self.mouse.pos):
                         hovering_any = True
                         break
                 if hovering_any:
-                    pygame.mouse.set_cursor(self._mouse.cursors["hand"])
+                    pygame.mouse.set_cursor(self.mouse.cursors["hand"])
                 else:
-                    pygame.mouse.set_cursor(self._mouse.cursors["arrow"])
+                    pygame.mouse.set_cursor(self.mouse.cursors["arrow"])
         elif event.type == pygame.MOUSEMOTION:
-            if self._mouse.detected and getattr(self._mouse.detected.ui, "tdrag", False):
-                modal = self._mouse.detected
+            if self.mouse.detected and getattr(self.mouse.detected.ui, "tdrag", False):
+                modal = self.mouse.detected
                 dx, dy = modal._offset
-                new_x = self._mouse.pos[0] - dx
-                new_y = self._mouse.pos[1] - dy
+                new_x = self.mouse.pos[0] - dx
+                new_y = self.mouse.pos[1] - dy
                 modal.ui.rect.topleft = (new_x, new_y)
                 modal.ui.pos = (new_x, new_y)
                 if modal.ui.trect:
                     modal.ui.trect.topleft = (new_x, new_y)
             else:
                 hovering_any = False
-                modals = [obj for obj in self._render.query if obj._type == "<Modal>" and obj.ux.show]
+                modals = [obj for obj in self.render.query if obj._type == "<Modal>" and obj.ux.show]
                 for modal in modals:
-                    if modal.ui.trect and modal.ui.trect.collidepoint(self._mouse.pos):
+                    if modal.ui.trect and modal.ui.trect.collidepoint(self.mouse.pos):
                         hovering_any = True
                         break
                 if hovering_any:
-                    pygame.mouse.set_cursor(self._mouse.cursors["hand"])
+                    pygame.mouse.set_cursor(self.mouse.cursors["hand"])
                 else:
-                    pygame.mouse.set_cursor(self._mouse.cursors["arrow"])
+                    pygame.mouse.set_cursor(self.mouse.cursors["arrow"])
 
 
     def update_binds(self, event):
-        if self._mouse.enabled:
+        if self.mouse.enabled:
             if event.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
-                self._mouse.pos = pygame.mouse.get_pos()
-                self._mouse.rel = pygame.mouse.get_rel()
+                self.mouse.pos = pygame.mouse.get_pos()
+                self.mouse.rel = pygame.mouse.get_rel()
                 if hasattr(event, "button"):
-                    self._mouse.pressed = pygame.mouse.get_pressed()
+                    self.mouse.pressed = pygame.mouse.get_pressed()
         self.mouse_event_handler(event)
         for i in self._binds.values():
             if event.type == i.event:
@@ -1233,7 +1522,7 @@ class Game:
         self.debug = True
         self.fullscreen = False
         self.data = {"update": {}, "draw": {}}
-        self.context = ContextManager(root)
+        self.context = ContextManager(root, init_mixer)
         self.context.add_bind("KEYDOWN", "F11", lambda: self.toggle_fullscreen())
 
 
@@ -1278,5 +1567,5 @@ class Game:
         pygame.quit()
 
 
-log("[ContexAPI] Rodando!")
+log("System", "RUNNING", "ContextAPI loaded successfully!")
 # batata
