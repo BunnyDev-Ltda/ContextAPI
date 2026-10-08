@@ -2,18 +2,31 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from functools import lru_cache
-import pygame, random, json, os
+import pygame, random, json, os, inspect
 
 
 LOG = True
+endline = True
+_z = ["<module>", "_call_with_frames_removed"]
 
 def log(*args):
     if LOG:
+        x = []
         if len(args) >= 3:
             from_where, method, text = args
-            print(f" | {from_where:<12}", "|", f"{method:<12}", "|", text)
+            x = [f" | {from_where:<12}", "|", f"{method:<12}", "|", text]
         else:
             print(*args)
+        if endline and x:
+            stack = inspect.stack()
+            caller = stack[1].function
+            if caller not in _z:
+                x.append(f"\n | Caller       | {caller:<12} |")
+                if len(stack) > 2:
+                     origin = stack[2].function
+                     if origin not in _z:
+                         x.append(f"ORIGIN {origin} FROM {from_where}")
+        print(*x)
 
 
 def load_config(root=None, path="config.json"):
@@ -659,18 +672,17 @@ class Bind:
     callback: callable = None
 
 
-    def call(self, debug=True):
+    def call(self):
         try:
             if callable(self.callback):
                 self.callback()
-                if debug:
-                    log("Bind", "CALL", f"{self.uid}", "WORKING")
+                log("Bind", "CALL", f"{self.uid} - WORKING")
                 return True
             else:
                 log("Bind", "ERROR", f"{self.uid} isn't a callable!")
                 return False
         except Exception as e:
-            log("Bind", "EXCEPTION" f"{self.uid} couldn't be called! - {type(e).__name__} in {e}")
+            log("Bind", "EXCEPTION", f"{self.uid} couldn't be called! - {type(e).__name__} in {e}")
             return False
 
 
@@ -989,7 +1001,7 @@ class ContextManager:
             uid = f"bind-{self.bind_index}-{key}"
         if not temp:
             if uid in self._binds:
-                log(f"Bind", "OK",  f"{uid} - WORKING")
+                log(f"Bind", "CALL",  f"{uid} - WORKING")
                 return self._binds[uid]
         if key is None: log("Bind", "WARN", "key is None!")
         x          = Bind()
@@ -1289,7 +1301,7 @@ class ContextManager:
             return result
 
 
-    def render(self, screen, dt, limits=None):
+    def _render(self, screen, dt, limits=None):
         if self.sort_dirty:
             self.render.query.sort(key=lambda item: item.ui.layer)
             self.sort_dirty = False
@@ -1436,9 +1448,9 @@ class ContextManager:
                     if btn.ui.rect and btn.ui.collidepoint(self.mouse.pos):
                         btn.clicked = True
                         if btn.on_click is not None and callable(btn.on_click):
-                            log("Button", "CALL", f"item: {btn.ui} clicked\n{'-'*26}")
+                            log("Button", "CALL", f"item: {btn.ui} clicked\n '{'-'*27}'")
                             btn.on_click()
-                            print('-'*26)
+                            print(f" .{'-'*27}.")
         elif event.type == pygame.MOUSEBUTTONUP:
             if event.button == 1:
                 for obj in self.render.query:
@@ -1504,8 +1516,10 @@ class Game:
         pygame.font.init()
         if init_mixer:
             pygame.mixer.init()
+            log("System", "INIT", "item: mixer has been initiated")
         if init_joystick:
             pygame.joystick.init()
+            log("System", "INIT", "item: joystick has been initiated")
         x = load_config(root)
         self.uid = "Game"
         self.root = root if root is not None else os.path.dirname(os.path.abspath(__file__))
@@ -1548,7 +1562,7 @@ class Game:
     def draw(self, dt):
         for i in self.data["draw"].values():
             i()
-        self.context.render(self.screen, dt, self.rect)
+        self.context._render(self.screen, dt, self.rect)
 
 
     def run(self, name=None):
@@ -1561,6 +1575,7 @@ class Game:
                 if event.type == pygame.QUIT:
                     self.running = False
                     break
+
             self.update(dt)
             self.draw(dt)
             pygame.display.flip()
